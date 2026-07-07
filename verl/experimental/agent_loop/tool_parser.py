@@ -192,6 +192,9 @@ class Qwen3XMLToolParser(ToolParser):
         tokenizer: The tokenizer to use.
     """
 
+    _LOG_PREVIEW_CHARS_ENV = "VERL_XML_TOOL_PARSE_LOG_CHARS"
+    _DEFAULT_LOG_PREVIEW_CHARS = 8192
+
     def __init__(self, tokenizer):
         super().__init__(tokenizer)
 
@@ -203,6 +206,26 @@ class Qwen3XMLToolParser(ToolParser):
         self.tool_call_regex = regex.compile(r"<tool_call>(.*?)</tool_call>|<tool_call>(.*?)$", regex.DOTALL)
         self.tool_call_function_regex = regex.compile(r"<function=(.*?)</function>|<function=(.*)$", regex.DOTALL)
         self.tool_call_parameter_regex = regex.compile(r"<parameter=(.*?)</parameter>|<parameter=(.*?)$", regex.DOTALL)
+
+    @classmethod
+    def _log_preview(cls, text: str) -> str:
+        try:
+            limit = int(os.getenv(cls._LOG_PREVIEW_CHARS_ENV, str(cls._DEFAULT_LOG_PREVIEW_CHARS)))
+        except ValueError:
+            limit = cls._DEFAULT_LOG_PREVIEW_CHARS
+        if limit <= 0 or len(text) <= limit:
+            return text
+        return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+
+    def _log_parse_failure(self, text: str, function_calls: list[str]) -> None:
+        function_calls_text = "\n---\n".join(function_calls) if function_calls else "<none>"
+        logger.error(
+            "Failed to parse XML tool call from model output.\n"
+            "Extracted function call candidates:\n%s\n"
+            "Full model output preview:\n%s",
+            self._log_preview(function_calls_text),
+            self._log_preview(text),
+        )
 
     def _parse_xml_function_call(
         self, function_call_str: str, tools: Optional[list[OpenAIFunctionToolSchema]]
@@ -330,6 +353,7 @@ class Qwen3XMLToolParser(ToolParser):
     ) -> tuple[str, list[FunctionCall]]:
         loop = get_event_loop()
         text = await loop.run_in_executor(None, self.tokenizer.decode, responses_ids)
+        function_calls: list[str] = []
         if self.tool_call_start_token not in text:
             return text, []
 
@@ -349,6 +373,7 @@ class Qwen3XMLToolParser(ToolParser):
 
             return content, tool_calls
         except Exception as e:
+            self._log_parse_failure(text, function_calls)
             logger.exception(f"Error in extracting tool call from response: {e}")
             return text, []
 
