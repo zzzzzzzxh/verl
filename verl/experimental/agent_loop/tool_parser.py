@@ -198,6 +198,8 @@ class Qwen3XMLToolParser(ToolParser):
 
     _LOG_PREVIEW_CHARS_ENV = "VERL_XML_TOOL_PARSE_LOG_CHARS"
     _DEFAULT_LOG_PREVIEW_CHARS = 8192
+    _LOG_TOKEN_IDS_ENV = "VERL_XML_TOOL_PARSE_LOG_TOKEN_IDS"
+    _DEFAULT_LOG_TOKEN_IDS = 4096
 
     def __init__(self, tokenizer):
         super().__init__(tokenizer)
@@ -221,14 +223,27 @@ class Qwen3XMLToolParser(ToolParser):
             return text
         return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
 
-    def _log_parse_failure(self, text: str, function_calls: list[str]) -> None:
+    @classmethod
+    def _log_token_ids_preview(cls, token_ids: list[int]) -> str:
+        try:
+            limit = int(os.getenv(cls._LOG_TOKEN_IDS_ENV, str(cls._DEFAULT_LOG_TOKEN_IDS)))
+        except ValueError:
+            limit = cls._DEFAULT_LOG_TOKEN_IDS
+        if limit <= 0 or len(token_ids) <= limit:
+            return repr(token_ids)
+        return f"{token_ids[:limit]!r}...<truncated {len(token_ids) - limit} token ids>"
+
+    def _log_parse_failure(self, text: str, function_calls: list[str], response_ids: list[int]) -> None:
         function_calls_text = "\n---\n".join(function_calls) if function_calls else "<none>"
         logger.error(
             "Failed to parse XML tool call from model output.\n"
             "Extracted function call candidates:\n%s\n"
-            "Full model output preview:\n%s",
+            "Full model output preview:\n%s\n"
+            "Raw response token IDs (before decode, count=%d):\n%s",
             self._log_preview(function_calls_text),
             self._log_preview(text),
+            len(response_ids),
+            self._log_token_ids_preview(response_ids),
         )
 
     def _parse_xml_function_call(
@@ -380,7 +395,7 @@ class Qwen3XMLToolParser(ToolParser):
 
             return content, tool_calls
         except Exception as e:
-            self._log_parse_failure(text, function_calls)
+            self._log_parse_failure(text, function_calls, responses_ids)
             logger.exception(f"Error in extracting tool call from response: {e}")
             return text, []
 
